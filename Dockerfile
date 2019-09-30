@@ -1,29 +1,46 @@
-FROM ruby:onbuild
+ARG RUBY_VERSION=2.6.3-alpine3.9
+# ------------------------------------------------------------------------------
+# gems: install production gems only
+# ------------------------------------------------------------------------------
+FROM ruby:${RUBY_VERSION} as gems
 
-ENV PORT 3000
-EXPOSE 3000
+COPY Gemfile Gemfile.lock ./
 
-# Ref: https://www.engineyard.com/blog/using-docker-for-rails
-RUN mkdir -p /usr/src/app
-WORKDIR /usr/src/app
+RUN apk add --update --no-cache --virtual .gem-deps \
+  build-base \
+  postgresql-dev \
+  tzdata \
+  && cp /usr/share/zoneinfo/Europe/Berlin /etc/localtime \
+  && gem install bundler -N --version "> 2" \
+  && bundle install --without development test --jobs 4 --no-cache --retry 3 \
+  && apk del --no-network .gem-deps \
+  && rm -rf /root/.bundle/cache \
+  && rm -rf /usr/local/bundle/cache \
+  && find /usr/local/bundle/gems/ -name "*.c" -delete \
+  && find /usr/local/bundle/gems/ -name "*.o" -delete \
+  && find /usr/local/bundle/gems/ -path "*/docs*" -delete
 
-RUN apt-get update && \
-    apt-get install -y nodejs mysql-client postgresql-client sqlite3 vim --no-install-recommends && \
-    rm -rf /var/lib/apt/lists/*
+# ------------------------------------------------------------------------------
+# dev-and-test: install tools and gems used in dev and test
+# ------------------------------------------------------------------------------
+FROM ruby:${RUBY_VERSION} as dev-and-test
 
-ENV RAILS_ENV development
-ENV RAILS_LOG_TO_STDOUT true
+RUN apk add --update --no-cache \
+  build-base \
+  git \
+  postgresql-dev \
+  tzdata \
+  && cp /usr/share/zoneinfo/Europe/Berlin /etc/localtime \
+  && gem install bundler -N --version "> 2"
 
-COPY Gemfile /usr/src/app/
-COPY Gemfile.lock /usr/src/app/
-RUN bundle config --global frozen 1
-RUN bundle install --without test
+WORKDIR /usr/src
 
-COPY . /usr/src/app
+COPY --from=gems /usr/local/bundle /usr/local/bundle
 
-# uncomment this for production
-# ENV RAILS_ENV production
-# ENV RAILS_SERVE_STATIC_FILES true
-# RUN bundle exec rake DATABASE_URL=postgresql:does_not_exist assets:precompile
+COPY Gemfile Gemfile.lock ./
+
+RUN bundle --with development test --jobs 4 --no-cache --retry 3
+
+COPY . .
 
 CMD ["rails", "server", "-b", "0.0.0.0"]
